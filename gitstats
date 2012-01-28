@@ -72,7 +72,8 @@ def getkeyssortedbyvalues(dict):
 
 # dict['author'] = { 'commits': 512 } - ...key(dict, 'commits')
 def getkeyssortedbyvaluekey(d, key):
-	return map(lambda el : el[1], sorted(map(lambda el : (d[el][key], el), d.keys())))
+	return map(lambda el : el[1],
+		sorted(map(lambda el : (d[el].get(key, 0), el), d.keys())))
 
 VERSION = 0
 def getversion():
@@ -278,8 +279,10 @@ class GitDataCollector(DataCollector):
 
 		# Collect revision statistics
 		# Outputs "<stamp> <date> <time> <timezone> <author> '<' <mail> '>'"
-		lines = getpipeoutput(['git rev-list --pretty=format:"%%at %%ai %%aN <%%aE>" %s' % getcommitrange('HEAD'), 'grep -v ^commit']).split('\n')
+		lines = getpipeoutput(['git rev-list --pretty=format:"%%at %%ai %%aN <%%aE>" %s' % getcommitrange('HEAD'), 'ggrep -v \^commit']).split('\n')
 		for line in lines:
+			if line[0] == ' ':
+				line = '0 1970-01-01 00:00:00 +0000 ' + line.strip()
 			parts = line.split(' ', 4)
 			author = ''
 			try:
@@ -287,7 +290,11 @@ class GitDataCollector(DataCollector):
 			except ValueError:
 				stamp = 0
 			timezone = parts[3]
-			author, mail = parts[4].split('<', 1)
+			if len(parts) == 5:
+				mailparts = parts[4].split('<', 1)
+			if len(mailparts) != 2:
+				mailparts = ['Unknown', 'unknown@unknown']
+			author, mail = mailparts
 			author = author.rstrip()
 			mail = mail.rstrip('>')
 			domain = '?'
@@ -382,16 +389,23 @@ class GitDataCollector(DataCollector):
 				self.active_days.add(yymmdd)
 
 			# timezone
+			try:
+				int(timezone)
+			except ValueError:
+				print 'Warning: invalid timezone "%s", using +0000' % timezone
+				timezone = '+0000'
 			self.commits_by_timezone[timezone] = self.commits_by_timezone.get(timezone, 0) + 1
 
 		# TODO Optimize this, it's the worst bottleneck
 		# outputs "<stamp> <files>" for each revision
-		revlines = getpipeoutput(['git rev-list --pretty=format:"%%at %%T" %s' % getcommitrange('HEAD'), 'grep -v ^commit']).strip().split('\n')
+		revlines = getpipeoutput(['git rev-list --pretty=format:"%%at %%T" %s' % getcommitrange('HEAD'), 'ggrep -v \^commit']).strip().split('\n')
 		lines = []
 		for revline in revlines:
-			time, rev = revline.split(' ')
+			t, rev = revline.split(' ')
 			linecount = self.getFilesInCommit(rev)
-			lines.append('%d %d' % (int(time), linecount))
+			if t == '':
+				t = 0
+			lines.append('%d %d' % (int(t), linecount))
 
 		self.total_commits += len(lines)
 		for line in lines:
@@ -455,6 +469,12 @@ class GitDataCollector(DataCollector):
 			if len(line) == 0:
 				continue
 
+			# Fix lines missing an author or empty altogether
+			if line == " ":
+				line = '0 Unknown'
+			if line[0] == ' ' and not line.strip()[0].isdigit():
+				line = '0 ' + line.strip()
+
 			# <stamp> <author>
 			if line.find('files changed,') == -1:
 				pos = line.find(' ')
@@ -474,9 +494,9 @@ class GitDataCollector(DataCollector):
 
 						files, inserted, deleted = 0, 0, 0
 					except ValueError:
-						print 'Warning: unexpected line "%s"' % line
+						print 'Warning: unexpected line (ValueError) "%s"' % line
 				else:
-					print 'Warning: unexpected line "%s"' % line
+					print 'Warning: unexpected line (no files changed) "%s"' % line
 			else:
 				numbers = re.findall('\d+', line)
 				if len(numbers) == 3:
@@ -509,6 +529,12 @@ class GitDataCollector(DataCollector):
 			if len(line) == 0:
 				continue
 
+			# Fix lines missing an author or empty altogether
+			if line == " ":
+				line = '0 Unknown'
+			if line[0] == ' ' and not line.strip()[0].isdigit():
+				line = '0 ' + line.strip()
+
 			# <stamp> <author>
 			if line.find('files changed,') == -1:
 				pos = line.find(' ')
@@ -532,9 +558,9 @@ class GitDataCollector(DataCollector):
 						self.changes_by_date_by_author[stamp][author]['commits'] = self.authors[author]['commits']
 						files, inserted, deleted = 0, 0, 0
 					except ValueError:
-						print 'Warning: unexpected line "%s"' % line
+						print 'Warning: unexpected line (ValueError) "%s"' % line
 				else:
-					print 'Warning: unexpected line "%s"' % line
+					print 'Warning: unexpected line (no files changed) "%s"' % line
 			else:
 				numbers = re.findall('\d+', line)
 				if len(numbers) == 3:
@@ -553,7 +579,7 @@ class GitDataCollector(DataCollector):
 
 		for name in self.authors.keys():
 			a = self.authors[name]
-			a['commits_frac'] = (100 * float(a['commits'])) / self.getTotalCommits()
+			a['commits_frac'] = (100 * float(a.get('commits', 0))) / self.getTotalCommits()
 			date_first = datetime.datetime.fromtimestamp(a['first_commit_stamp'])
 			date_last = datetime.datetime.fromtimestamp(a['last_commit_stamp'])
 			delta = date_last - date_first
